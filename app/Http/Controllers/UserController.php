@@ -23,7 +23,7 @@ class UserController extends Controller
         $inactiveUsers = User::where('active', 0)->count();
 
        
-        $users = User::with('role')->orderby('id', 'desc')->get();
+        $users = User::with('role:id,name')->orderby('id', 'desc')->get();
         // return view('admin.pages.user.index', compact('users', 'totalUsers', 'totalRoles', 'activeUsers', 'inactiveUsers'));
         return response()->json([
             'success'   => true,
