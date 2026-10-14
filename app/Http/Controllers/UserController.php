@@ -22,7 +22,7 @@ class UserController extends Controller
 
         $inactiveUsers = User::where('active', 0)->count();
 
-       
+
         $users = User::with('role:id,name')->orderby('id', 'desc')->get();
         // return view('admin.pages.user.index', compact('users', 'totalUsers', 'totalRoles', 'activeUsers', 'inactiveUsers'));
         return response()->json([
@@ -103,12 +103,12 @@ class UserController extends Controller
         $user = User::with('role')->findOrFail($id);
 
         // return view('admin.pages.user.show', compact('user'));
-        if($user){
+        if ($user) {
             return response()->json([
                 'success' => true,
                 'user' => $user
             ]);
-        }else{
+        } else {
             return response()->json([
                 'error' => true,
                 'message' => 'User not found'
@@ -155,17 +155,17 @@ class UserController extends Controller
             //     ->with('success', 'user updated successfully');
 
             return response()->json([
-                'success' => 'User created successFully'
+                'success' => true,
+                'message' => 'User updated successfully',
             ]);
-
-
         } else {
             // return redirect()
             //     ->route('users.create')
             //     ->with('error', 'user not updated');
 
-             return response()->json([
-                'error' => 'User not  created. Try again Later'
+            return response()->json([
+                'error' => true,
+                'message' => 'User is not updated',
             ], 500);
         }
     }
@@ -173,23 +173,42 @@ class UserController extends Controller
     /**
      * Remove the specified resource from storage.
      */
+    // public function destroy(string $id)
+    // {
+    //     // dd($id);
+    //     User::destroy($id);
+
+    //     // return redirect()
+    //     //     ->route('users.index')
+    //     //     ->with('success', 'user deleted successfully');
+
+    //     $user = User::find($id);
+    //     if ($user) {
+    //         $user->delete();
+    //         return response()->json([
+    //             'success' => true,
+    //             'message' => 'User deleted successfully'
+    //         ]);
+    //     } else {
+    //         return response()->json([
+    //             'error' => true,
+    //             'message' => 'User not found'
+    //         ], 404);
+    //     }
+    // }
+
     public function destroy(string $id)
     {
-        // dd($id);
-        User::destroy($id);
-
-        // return redirect()
-        //     ->route('users.index')
-        //     ->with('success', 'user deleted successfully');
-
         $user = User::find($id);
-        if($user){
+
+        if ($user) {
             $user->delete();
             return response()->json([
                 'success' => true,
                 'message' => 'User deleted successfully'
             ]);
-        }else{
+        } else {
+
             return response()->json([
                 'error' => true,
                 'message' => 'User not found'

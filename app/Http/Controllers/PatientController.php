@@ -7,23 +7,29 @@ use Illuminate\Http\Request;
 
 class PatientController extends Controller
 {
-
+    /**
+     * Display a listing of the resource.
+     */
     public function index()
     {
-        $patients = Patient::latest()->paginate(15);
-
         $totalPatients = Patient::count();
+
         $newThisMonth = Patient::whereMonth('created_at', now()->month)
             ->whereYear('created_at', now()->year)
             ->count();
+
         $totalGuardians = Patient::whereNotNull('guardian_name')->count();
 
-        return view('admin.pages.patient.index', compact(
-            'patients',
-            'totalPatients',
-            'newThisMonth',
-            'totalGuardians'
-        ));
+        $patients = Patient::orderby('id', 'desc')->get();
+
+        // return view('admin.pages.patient.index', compact('patients', 'totalPatients', 'newThisMonth', 'totalGuardians'));
+        return response()->json([
+            'success'        => true,
+            'patients'       => $patients,
+            'totalPatients'  => $totalPatients,
+            'newThisMonth'   => $newThisMonth,
+            'totalGuardians' => $totalGuardians,
+        ]);
     }
 
     /**
@@ -50,19 +56,42 @@ class PatientController extends Controller
             'address' => 'nullable|string',
         ]);
 
-        Patient::create($validated);
+        $patient = Patient::create($validated);
 
-        return redirect()
-            ->route('patients.index')
-            ->with('success', 'Patient added successfully.');
+        if ($patient) {
+            // return redirect()
+            //     ->route('patients.index')
+            //     ->with('success', 'Patient added successfully.');
+            return response()->json([
+                'success' => 'Patient created successfully',
+                'patient' => $patient
+            ]);
+        } else {
+            return response()->json([
+                'error' => 'Patient not created. Try again later'
+            ], 500);
+        }
     }
 
     /**
      * Display the specified resource.
      */
-    public function show(Patient $patient)
+    public function show(string $id)
     {
-        return view('admin.pages.patient.show', compact('patient'));
+        $patient = Patient::find($id);
+
+        // return view('admin.pages.patient.show', compact('patient'));
+        if ($patient) {
+            return response()->json([
+                'success' => true,
+                'patient' => $patient
+            ]);
+        } else {
+            return response()->json([
+                'error' => true,
+                'message' => 'Patient not found'
+            ], 404);
+        }
     }
 
     /**
@@ -76,7 +105,7 @@ class PatientController extends Controller
     /**
      * Update the specified resource in storage.
      */
-    public function update(Request $request, Patient $patient)
+    public function update(Request $request, string $id)
     {
         $validated = $request->validate([
             'name' => 'required|string|max:100',
@@ -89,25 +118,52 @@ class PatientController extends Controller
             'address' => 'nullable|string',
         ]);
 
-        $patient->update($validated);
+        $patient = Patient::find($id);
 
-        return redirect()
-            ->route('patients.index')
-            ->with('success', 'Patient updated successfully.');
+        if (!$patient) {
+            return response()->json([
+                'error' => true,
+                'message' => 'Patient not found'
+            ], 404);
+        }
+
+        if ($patient->update($validated)) {
+            // return redirect()
+            //     ->route('patients.index')
+            //     ->with('success', 'Patient updated successfully.');
+            return response()->json([
+                'success' => true,
+                'message' => 'Patient updated successfully',
+                'patient' => $patient
+            ]);
+        } else {
+            return response()->json([
+                'error' => true,
+                'message' => 'Patient is not updated',
+            ], 500);
+        }
     }
 
     /**
      * Remove the specified resource from storage.
      */
-    public function destroy(Patient $patient)
+    public function destroy(string $id)
     {
-        $patient->delete();
+        $patient = Patient::find($id);
 
-        return redirect()
-            ->route('patients.index')
-            ->with('success', 'Patient deleted successfully.');
+        if ($patient) {
+            $patient->delete();
+            return response()->json([
+                'success' => true,
+                'message' => 'Patient deleted successfully'
+            ]);
+        } else {
+            return response()->json([
+                'error' => true,
+                'message' => 'Patient not found'
+            ], 404);
+        }
     }
-
 
     public function search(Request $request)
     {
