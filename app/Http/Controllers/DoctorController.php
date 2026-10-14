@@ -4,133 +4,164 @@ namespace App\Http\Controllers;
 
 use App\Models\Department;
 use App\Models\Doctor;
-use App\Models\User;
 use App\Services\UploadImgService;
 use Illuminate\Http\Request;
 
 class DoctorController extends Controller
 {
-
+    /**
+     * Display a listing of the resource.
+     */
     public function index()
     {
-        $doctors = Doctor::with(['user', 'department'])->latest()->paginate(10);
-
         $totalDoctors = Doctor::count();
+
         $totalDepartments = Department::count();
+
         $newThisMonth = Doctor::whereMonth('created_at', now()->month)
             ->whereYear('created_at', now()->year)
             ->count();
 
-        return view('admin.pages.doctor.index', compact(
-            'doctors',
-            'totalDoctors',
-            'totalDepartments',
-            'newThisMonth'
-        ));
+        $doctors = Doctor::with(['user:id,name', 'department:id,name'])
+            ->orderBy('id', 'desc')
+            ->get();
+
+        return response()->json([
+            'success'          => true,
+            'doctors'          => $doctors,
+            'totalDoctors'     => $totalDoctors,
+            'totalDepartments' => $totalDepartments,
+            'newThisMonth'     => $newThisMonth,
+        ]);
     }
 
+    // create() ar edit() lagbe na, karon form React-e.
+    // User/Department-er dropdown list React theke
+    // api.get("users") ar api.get("departments") diye ashbe.
 
-    public function create()
-    {
-        $users = User::orderBy('name')->get();
-        $departments = Department::orderBy('name')->get();
-
-        return view('admin.pages.doctor.create', compact('users', 'departments'));
-    }
-
-
+    /**
+     * Store a newly created resource in storage.
+     */
     public function store(Request $request)
     {
-        $request->validate([
-            'image' => 'image|mimes:jpeg,png,jpg,gif,svg|max:500',
-        ], [
-            'image.max' => 'Image size is too learge . Maximum size is 500kb',
-        ]);
-
-        if ($request->hasFile('image')) {
-            $imgName = UploadImgService::upload($request->image, 'uploads/doctors');
-
-            Doctor::create([
-                'user_id' => $request->user_id,
-                'department_id' => $request->department_id,
-                'specialization' => $request->specialization,
-                'qualification' => $request->qualification,
-                'consultation_fee' => $request->consultation_fee,
-                'image'            => $imgName
-            ]);
-            return redirect()->route('doctors.index')->with('success', 'Doctor created successfully');
-        } else {
-            Doctor::create([
-                'user_id' => $request->user_id,
-                'department_id' => $request->department_id,
-                'specialization' => $request->specialization,
-                'qualification' => $request->qualification,
-                'consultation_fee' => $request->consultation_fee,
-
-            ]);
-            return redirect()->route('doctors.index')->with('success', 'Doctor created successfully');
-        }
-    }
-
-
-    public function show(Doctor $doctor)
-    {
-        $doctor->load(['user', 'department']);
-
-        return view('admin.pages.doctor.show', compact('doctor'));
-    }
-
-
-    public function edit(Doctor $doctor)
-    {
-        $users = User::orderBy('name')->get();
-        $departments = Department::orderBy('name')->get();
-
-        return view('admin.pages.doctor.edit', compact('doctor', 'users', 'departments'));
-    }
-
-
-    public function update(Request $request, Doctor $doctor)
-    {
         $validated = $request->validate([
-            'user_id' => 'required|exists:users,id',
-            'department_id' => 'nullable|exists:departments,id',
-            'specialization' => 'nullable|string|max:100',
-            'qualification' => 'nullable|string|max:150',
+            'user_id'          => 'required|exists:users,id',
+            'department_id'    => 'nullable|exists:departments,id',
+            'specialization'   => 'nullable|string|max:100',
+            'qualification'    => 'nullable|string|max:150',
             'consultation_fee' => 'nullable|numeric|min:0',
-            'image' => 'nullable|image|mimes:jpeg,png,jpg,gif,svg|max:500',
+            'image'            => 'nullable|image|mimes:jpeg,png,jpg,gif,svg|max:500',
         ], [
             'image.max' => 'Image size is too large. Maximum size is 500KB',
         ]);
 
-
         if ($request->hasFile('image')) {
-
-            $imgName = UploadImgService::upload(
+            $validated['image'] = UploadImgService::upload(
                 $request->image,
                 'uploads/doctors'
             );
-
-            $validated['image'] = $imgName;
         }
 
-        $doctor->update($validated);
+        $doctor = Doctor::create($validated);
+        $doctor->load(['user:id,name,email,phone', 'department:id,name']);
 
-        return redirect()
-            ->route('doctors.index')
-            ->with('success', 'Doctor updated successfully.');
+        return response()->json([
+            'success' => 'Doctor created successfully',
+            'doctor'  => $doctor,
+        ]);
     }
 
-
-    public function destroy(Doctor $doctor)
+    /**
+     * Display the specified resource.
+     */
+    public function show(string $id)
     {
-        $doctor->delete();
+        $doctor = Doctor::with(['user:id,name,email,phone', 'department:id,name'])->find($id);
 
-        return redirect()
-            ->route('doctors.index')
-            ->with('success', 'Doctor deleted successfully.');
+        if ($doctor) {
+            return response()->json([
+                'success' => true,
+                'doctor'  => $doctor,
+            ]);
+        } else {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Doctor not found',
+            ], 404);
+        }
     }
 
+    /**
+     * Update the specified resource in storage.
+     *
+     * Note: image upload-er shomoy React theke PUT na pathiye POST pathabe
+     * ar FormData-te `_method=PUT` dibe, noile Laravel file pabe na.
+     */
+    public function update(Request $request, string $id)
+    {
+        $validated = $request->validate([
+            'user_id'          => 'required|exists:users,id',
+            'department_id'    => 'nullable|exists:departments,id',
+            'specialization'   => 'nullable|string|max:100',
+            'qualification'    => 'nullable|string|max:150',
+            'consultation_fee' => 'nullable|numeric|min:0',
+            'image'            => 'nullable|image|mimes:jpeg,png,jpg,gif,svg|max:500',
+        ], [
+            'image.max' => 'Image size is too large. Maximum size is 500KB',
+        ]);
+
+        $doctor = Doctor::find($id);
+
+        if (!$doctor) {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Doctor not found',
+            ], 404);
+        }
+
+        if ($request->hasFile('image')) {
+            $validated['image'] = UploadImgService::upload(
+                $request->image,
+                'uploads/doctors'
+            );
+        }
+
+        if ($doctor->update($validated)) {
+            $doctor->load(['user:id,name,email,phone', 'department:id,name']);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Doctor updated successfully',
+                'doctor'  => $doctor,
+            ]);
+        } else {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Doctor is not updated',
+            ], 500);
+        }
+    }
+
+    /**
+     * Remove the specified resource from storage.
+     */
+    public function destroy(string $id)
+    {
+        $doctor = Doctor::find($id);
+
+        if ($doctor) {
+            $doctor->delete();
+            return response()->json([
+                'success' => true,
+                'message' => 'Doctor deleted successfully',
+            ]);
+        } else {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Doctor not found',
+            ], 404);
+        }
+    }
 
     public function search(Request $request)
     {

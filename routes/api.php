@@ -1,5 +1,7 @@
 <?php
 
+use App\Http\Controllers\DepartmentController;
+use App\Http\Controllers\DoctorController;
 use App\Http\Controllers\PatientController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\UserController;
@@ -13,3 +15,7 @@ use Illuminate\Support\Facades\Route;
 Route::apiResource('users', UserController::class);
 Route::apiResource('patients', PatientController::class);
 Route::get('roles',[RoleController::class, 'index']);
+
+Route::get('doctors/search', [DoctorController::class, 'search']);
+Route::apiResource('doctors', DoctorController::class);
+Route::apiResource('departments', DepartmentController::class);
