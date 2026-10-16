@@ -4,63 +4,65 @@ namespace App\Http\Controllers;
 
 use App\Models\Appointment;
 use App\Models\Doctor;
+use App\Models\Invoice;
 use App\Models\LabTest;
 use App\Models\Medicine;
 use App\Models\Patient;
 use App\Models\Prescription;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use App\Models\Invoice;
 
 class PrescriptionController extends Controller
 {
-
     /**
      * Display a listing of the resource.
+     *
+     * Note: Admission ekhono banano hoyni, tai 'admission' relation load kora hocche na.
+     * prescriptions.admission_id shobshomoy NULL thakbe.
      */
     public function index()
     {
-        $prescriptions = Prescription::with(['patient', 'doctor.user', 'admission'])
-            ->orderBy('id', 'desc')
-            ->paginate(10);
-
         $totalPrescriptions = Prescription::count();
+
         $issuedToday = Prescription::whereDate('prescription_date', today())->count();
+
         $issuedThisMonth = Prescription::whereMonth('prescription_date', now()->month)
             ->whereYear('prescription_date', now()->year)
             ->count();
 
-        return view('admin.pages.prescription.index', compact(
-            'prescriptions',
-            'totalPrescriptions',
-            'issuedToday',
-            'issuedThisMonth'
-        ));
+        $prescriptions = Prescription::with(['patient:id,name', 'doctor.user:id,name'])
+            ->withCount(['prescriptionMedicines', 'labTestOrders'])
+            ->orderBy('id', 'desc')
+            ->get();
+
+        return response()->json([
+            'success'            => true,
+            'prescriptions'      => $prescriptions,
+            'totalPrescriptions' => $totalPrescriptions,
+            'issuedToday'        => $issuedToday,
+            'issuedThisMonth'    => $issuedThisMonth,
+        ]);
     }
 
+    // create() ar edit() lagbe na, karon form React-e.
+    // Dropdown-er shob data options() theke ashbe: api.get("prescriptions/options")
+
     /**
-     * Show the form for creating a new resource.
+     * Form-er dropdown-er data (patients, doctors, appointments, medicines, lab tests).
+     * Route-e apiResource-er ager e boshate hobe, noile "options" ke {id} bhabe.
      */
-    public function create()
+    public function options()
     {
-        $patients = Patient::orderBy('name')->get();
-        $doctors = Doctor::with('user')->get();
-        $appointments = Appointment::with('patient')->orderBy('appointment_date', 'desc')->get();
-        $medicines = Medicine::orderBy('name')->get();
-        $labTests = LabTest::orderBy('test_name')->get();
-
-        $appointmentMap = $appointments->mapWithKeys(fn($a) => [
-            $a->id => ['patient_id' => $a->patient_id, 'doctor_id' => $a->doctor_id],
+        return response()->json([
+            'success'      => true,
+            'patients'     => Patient::orderBy('name')->get(['id', 'name', 'phone']),
+            'doctors'      => Doctor::with(['user:id,name', 'department:id,name'])->get(),
+            'appointments' => Appointment::with('patient:id,name')
+                ->orderBy('appointment_date', 'desc')
+                ->get(['id', 'patient_id', 'doctor_id', 'appointment_date', 'appointment_time']),
+            'medicines'    => Medicine::orderBy('name')->get(['id', 'name']),
+            'labTests'     => LabTest::orderBy('test_name')->get(['id', 'test_name']),
         ]);
-
-        return view('admin.pages.prescription.create', compact(
-            'patients',
-            'doctors',
-            'appointments',
-            'medicines',
-            'labTests',
-            'appointmentMap'
-        ));
     }
 
     /**
@@ -68,242 +70,248 @@ class PrescriptionController extends Controller
      */
     public function store(Request $request)
     {
-        $validated = $request->validate([
-            'patient_id' => 'required|exists:patients,id',
-            'doctor_id' => 'required|exists:doctors,id',
-            'appointment_id' => 'nullable|exists:appointments,id',
-            'prescription_date' => 'required|date',
-            'notes' => 'nullable|string',
-            'admission_advised' => 'nullable|boolean',
-            'medicines' => 'nullable|array',
-            'medicines.*.medicine_id' => 'required_with:medicines|exists:medicines,id',
-            'medicines.*.dosage' => 'nullable|string|max:100',
-            'medicines.*.duration' => 'nullable|string|max:50',
-            'medicines.*.instructions' => 'nullable|string',
-            'lab_tests' => 'nullable|array',
-            'lab_tests.*.test_id' => 'required_with:lab_tests|exists:lab_tests,id',
-        ]);
+        $validated = $this->validatePrescription($request);
 
-        DB::transaction(function () use ($validated, $request) {
+        $prescription = DB::transaction(function () use ($validated, $request) {
             $data = collect($validated)->except(['medicines', 'lab_tests'])->toArray();
 
-            // Doctor can only SUGGEST admission. The receptionist does the
-            // actual admission later, which fills prescriptions.admission_id.
+            // Doctor shudhu admission SUGGEST korte pare. Asol admission receptionist
+            // pore korbe (admission ready hole prescriptions.admission_id fill hobe).
             $data['admission_advised'] = $request->boolean('admission_advised');
 
             $prescription = Prescription::create($data);
 
-            foreach ($validated['medicines'] ?? [] as $row) {
-                $prescription->prescriptionMedicines()->create($row);
-            }
+            $this->syncMedicines($prescription, $validated['medicines'] ?? []);
+            $this->syncLabTests($prescription, $validated['lab_tests'] ?? []);
 
-            foreach ($validated['lab_tests'] ?? [] as $row) {
-                $prescription->labTestOrders()->create([
-                    'patient_id' => $prescription->patient_id,
-                    'doctor_id' => $prescription->doctor_id,
-                    'test_id' => $row['test_id'],
-                    'status' => 'Pending',
-                    'order_date' => $prescription->prescription_date,
-                ]);
-            }
+            return $prescription;
         });
 
-        return redirect()
-            ->route('prescriptions.index')
-            ->with('success', 'Prescription saved successfully.');
+        $prescription->load($this->detailRelations());
+
+        return response()->json([
+            'success'      => 'Prescription saved successfully',
+            'prescription' => $prescription,
+        ]);
     }
 
     /**
      * Display the specified resource.
      */
-    public function show(Prescription $prescription)
+    public function show(string $id)
     {
-        $prescription->load([
-            'patient',
-            'doctor.user',
-            'doctor.department',
-            'appointment',
-            'prescriptionMedicines.medicine',
-            'labTestOrders.test',
-            'admission.ward',
-            'admission.bed',
-        ]);
+        $prescription = Prescription::with($this->detailRelations())->find($id);
 
-        return view('admin.pages.prescription.show', compact('prescription'));
-    }
-
-    /**
-     * Show the form for editing the specified resource.
-     */
-    public function edit(Prescription $prescription)
-    {
-        $prescription->load('prescriptionMedicines.medicine', 'labTestOrders', 'admission.ward', 'admission.bed');
-
-        $patients = Patient::orderBy('name')->get();
-        $doctors = Doctor::with('user')->get();
-        $appointments = Appointment::with('patient')->orderBy('appointment_date', 'desc')->get();
-        $medicines = Medicine::orderBy('name')->get();
-        $labTests = LabTest::orderBy('test_name')->get();
-
-        $appointmentMap = $appointments->mapWithKeys(fn($a) => [
-            $a->id => ['patient_id' => $a->patient_id, 'doctor_id' => $a->doctor_id],
-        ]);
-
-        $existingMedicineRows = $prescription->prescriptionMedicines->map(fn($row) => [
-            'medicine_id' => $row->medicine_id,
-            'dosage' => $row->dosage,
-            'duration' => $row->duration,
-            'instructions' => $row->instructions,
-        ])->values();
-
-        $existingLabTestRows = $prescription->labTestOrders
-            ->where('status', 'Pending')
-            ->map(fn($row) => ['test_id' => $row->test_id])
-            ->values();
-
-        return view('admin.pages.prescription.edit', compact(
-            'prescription',
-            'patients',
-            'doctors',
-            'appointments',
-            'medicines',
-            'labTests',
-            'appointmentMap',
-            'existingMedicineRows',
-            'existingLabTestRows'
-        ));
+        if ($prescription) {
+            return response()->json([
+                'success'      => true,
+                'prescription' => $prescription,
+            ]);
+        } else {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Prescription not found',
+            ], 404);
+        }
     }
 
     /**
      * Update the specified resource in storage.
      */
-    public function update(Request $request, Prescription $prescription)
+    public function update(Request $request, string $id)
     {
-        $validated = $request->validate([
-            'patient_id' => 'required|exists:patients,id',
-            'doctor_id' => 'required|exists:doctors,id',
-            'appointment_id' => 'nullable|exists:appointments,id',
-            'prescription_date' => 'required|date',
-            'notes' => 'nullable|string',
-            'admission_advised' => 'nullable|boolean',
-            'medicines' => 'nullable|array',
-            'medicines.*.medicine_id' => 'required_with:medicines|exists:medicines,id',
-            'medicines.*.dosage' => 'nullable|string|max:100',
-            'medicines.*.duration' => 'nullable|string|max:50',
-            'medicines.*.instructions' => 'nullable|string',
-            'lab_tests' => 'nullable|array',
-            'lab_tests.*.test_id' => 'required_with:lab_tests|exists:lab_tests,id',
-        ]);
+        $validated = $this->validatePrescription($request);
+
+        $prescription = Prescription::find($id);
+
+        if (!$prescription) {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Prescription not found',
+            ], 404);
+        }
 
         DB::transaction(function () use ($validated, $request, $prescription) {
             $data = collect($validated)->except(['medicines', 'lab_tests'])->toArray();
 
-            // Once the receptionist has admitted the patient, the suggestion
-            // stays "true" (the form no longer shows the radio buttons).
+            // Receptionist admit korle suggestion "true" thakbe.
+            // Ekhon admission_id shobshomoy null, tai request theke-i ashbe.
             $data['admission_advised'] = $prescription->admission_id
                 ? true
                 : $request->boolean('admission_advised');
 
             $prescription->update($data);
 
-            // Replace the medicine list with whatever was submitted this time
+            // Medicine list ta notun submit kora list diye replace hobe
             $prescription->prescriptionMedicines()->delete();
-            foreach ($validated['medicines'] ?? [] as $row) {
-                $prescription->prescriptionMedicines()->create($row);
-            }
+            $this->syncMedicines($prescription, $validated['medicines'] ?? []);
 
+            // Shudhu Pending lab order replace hoy, baki gulo (Completed etc.) thake
             $prescription->labTestOrders()->where('status', 'Pending')->delete();
-            foreach ($validated['lab_tests'] ?? [] as $row) {
-                $prescription->labTestOrders()->create([
-                    'patient_id' => $prescription->patient_id,
-                    'doctor_id' => $prescription->doctor_id,
-                    'test_id' => $row['test_id'],
-                    'status' => 'Pending',
-                    'order_date' => $prescription->prescription_date,
-                ]);
-            }
+            $this->syncLabTests($prescription, $validated['lab_tests'] ?? []);
         });
 
-        return redirect()
-            ->route('prescriptions.index')
-            ->with('success', 'Prescription updated successfully.');
+        $prescription->load($this->detailRelations());
+
+        return response()->json([
+            'success'      => true,
+            'message'      => 'Prescription updated successfully',
+            'prescription' => $prescription,
+        ]);
     }
 
     /**
      * Remove the specified resource from storage.
      */
-    public function destroy(Prescription $prescription)
+    public function destroy(string $id)
     {
-        $prescription->delete();
+        $prescription = Prescription::find($id);
 
-        return redirect()
-            ->route('prescriptions.index')
-            ->with('success', 'Prescription deleted successfully.');
+        if ($prescription) {
+            $prescription->delete();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Prescription deleted successfully',
+            ]);
+        } else {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Prescription not found',
+            ], 404);
+        }
     }
 
-
-
-
-    // invoice
-    public function generateInvoice(Prescription $prescription)
+    /**
+     * Prescription theke invoice generate kore.
+     * POST /prescriptions/{id}/generate-invoice
+     */
+    public function generateInvoice(string $id)
     {
-        $prescription->load(['doctor', 'labTestOrders.test', 'medicines']);
+        $prescription = Prescription::with(['doctor.user', 'labTestOrders.test', 'medicines'])->find($id);
+
+        if (!$prescription) {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Prescription not found',
+            ], 404);
+        }
 
         if ($prescription->admission_id) {
             $invoice = Invoice::firstOrNew(['admission_id' => $prescription->admission_id]);
         } elseif ($prescription->appointment_id) {
             $invoice = Invoice::firstOrNew(['appointment_id' => $prescription->appointment_id]);
         } else {
-            return back()->with('error', 'This prescription is not linked to an appointment or admission, so an invoice cannot be generated.');
+            return response()->json([
+                'error'   => true,
+                'message' => 'This prescription is not linked to an appointment or admission, so an invoice cannot be generated.',
+            ], 422);
         }
 
-        $invoice->patient_id = $prescription->patient_id;
+        $invoice->patient_id   = $prescription->patient_id;
         $invoice->invoice_date = $invoice->invoice_date ?? $prescription->prescription_date;
-        $invoice->status = $invoice->status ?? 'Unpaid';
+        $invoice->status       = $invoice->status ?? 'Unpaid';
         $invoice->save();
 
-        
         $invoice->items()->whereIn('item_type', ['Consultation Fee', 'Lab Test', 'Medicine'])->delete();
 
+        // Admission nei, tai ekhon shobshomoy false. Admission ashle medicine bill-o hobe.
         $isAdmitted = (bool) $prescription->admission_id;
 
         if ($prescription->doctor && $prescription->doctor->consultation_fee) {
             $invoice->items()->create([
-                'item_type' => 'Consultation Fee',
+                'item_type'         => 'Consultation Fee',
                 'item_reference_id' => $prescription->doctor_id,
-                'description' => 'Consultation — Dr. ' . ($prescription->doctor->user->name ?? 'N/A'),
-                'amount' => $prescription->doctor->consultation_fee,
+                'description'       => 'Consultation — Dr. ' . ($prescription->doctor->user->name ?? 'N/A'),
+                'amount'            => $prescription->doctor->consultation_fee,
             ]);
         }
 
-        
         if ($isAdmitted) {
             foreach ($prescription->medicines as $medicine) {
                 $invoice->items()->create([
-                    'item_type' => 'Medicine',
+                    'item_type'         => 'Medicine',
                     'item_reference_id' => $medicine->id,
-                    'description' => $medicine->name,
-                    'amount' => $medicine->unit_price ?? 0,
+                    'description'       => $medicine->name,
+                    'amount'            => $medicine->unit_price ?? 0,
                 ]);
             }
         }
 
-        // Lab tests ordered by the doctor — always billed (cancelled ones are skipped)
+        // Doctor-er order kora lab test shobshomoy bill hoy (Cancelled gulo bad)
         foreach ($prescription->labTestOrders as $order) {
             if ($order->test && $order->status !== 'Cancelled') {
                 $invoice->items()->create([
-                    'item_type' => 'Lab Test',
+                    'item_type'         => 'Lab Test',
                     'item_reference_id' => $order->test_id,
-                    'description' => $order->test->test_name,
-                    'amount' => $order->test->price ?? 0,
+                    'description'       => $order->test->test_name,
+                    'amount'            => $order->test->price ?? 0,
                 ]);
             }
         }
 
         $invoice->update(['total_amount' => $invoice->items()->sum('amount')]);
 
-        return redirect()
-            ->route('invoices.show', $invoice->id)
-            ->with('success', 'Invoice generated from prescription.');
+        return response()->json([
+            'success'    => true,
+            'message'    => 'Invoice generated from prescription',
+            'invoice_id' => $invoice->id,
+        ]);
+    }
+
+    // ---------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------
+
+    private function validatePrescription(Request $request): array
+    {
+        return $request->validate([
+            'patient_id'                   => 'required|exists:patients,id',
+            'doctor_id'                    => 'required|exists:doctors,id',
+            'appointment_id'               => 'nullable|exists:appointments,id',
+            'prescription_date'            => 'required|date',
+            'notes'                        => 'nullable|string',
+            'admission_advised'            => 'nullable|boolean',
+            'medicines'                    => 'nullable|array',
+            'medicines.*.medicine_id'      => 'required_with:medicines|exists:medicines,id',
+            'medicines.*.dosage'           => 'nullable|string|max:100',
+            'medicines.*.duration'         => 'nullable|string|max:50',
+            'medicines.*.instructions'     => 'nullable|string',
+            'lab_tests'                    => 'nullable|array',
+            'lab_tests.*.test_id'          => 'required_with:lab_tests|exists:lab_tests,id',
+        ]);
+    }
+
+    private function syncMedicines(Prescription $prescription, array $rows): void
+    {
+        foreach ($rows as $row) {
+            $prescription->prescriptionMedicines()->create($row);
+        }
+    }
+
+    private function syncLabTests(Prescription $prescription, array $rows): void
+    {
+        foreach ($rows as $row) {
+            $prescription->labTestOrders()->create([
+                'patient_id' => $prescription->patient_id,
+                'doctor_id'  => $prescription->doctor_id,
+                'test_id'    => $row['test_id'],
+                'status'     => 'Pending',
+                'order_date' => $prescription->prescription_date,
+            ]);
+        }
+    }
+
+    // show/store/update-er response-e jei relation gulo lage (admission bad)
+    private function detailRelations(): array
+    {
+        return [
+            'patient',
+            'doctor.user:id,name,email,phone',
+            'doctor.department:id,name',
+            'appointment',
+            'prescriptionMedicines.medicine',
+            'labTestOrders.test',
+        ];
     }
 }

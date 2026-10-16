@@ -3,10 +3,16 @@
 namespace App\Http\Controllers;
 
 use App\Models\Medicine;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 
 class MedicineController extends Controller
 {
+    /**
+     * Display a listing of the resource.
+     *
+     * Filter: ?q=  (name / generic_name), ?category=  , ?stock=low|out|in
+     */
     public function index(Request $request)
     {
         $low = Medicine::LOW_STOCK_THRESHOLD;
@@ -33,71 +39,134 @@ class MedicineController extends Controller
             $query->where('stock_quantity', '>=', $low);
         }
 
-        $medicines = $query->orderBy('name')->paginate(15)->withQueryString();
+        $medicines = $query->orderBy('name')->get();
 
-        $categories = Medicine::whereNotNull('category')->distinct()->orderBy('category')->pluck('category');
+        $categories = Medicine::whereNotNull('category')
+            ->distinct()
+            ->orderBy('category')
+            ->pluck('category');
 
-        $totalMedicines = Medicine::count();
-        $inStockCount = Medicine::where('stock_quantity', '>=', $low)->count();
-        $lowStockCount = Medicine::where('stock_quantity', '>', 0)->where('stock_quantity', '<', $low)->count();
+        $totalMedicines  = Medicine::count();
+        $lowStockCount   = Medicine::where('stock_quantity', '>', 0)->where('stock_quantity', '<', $low)->count();
         $outOfStockCount = Medicine::where('stock_quantity', '<=', 0)->count();
 
-        return view('admin.pages.medicine.index', compact(
-            'medicines', 'categories', 'totalMedicines', 'inStockCount', 'lowStockCount', 'outOfStockCount', 'low'
-        ));
+        return response()->json([
+            'success'         => true,
+            'medicines'       => $medicines,
+            'categories'      => $categories,
+            'lowStockLimit'   => $low,
+            'totalMedicines'  => $totalMedicines,
+            'lowStockCount'   => $lowStockCount,
+            'outOfStockCount' => $outOfStockCount,
+        ]);
     }
 
-    public function create()
-    {
-        return view('admin.pages.medicine.create');
-    }
+    // create() ar edit() lagbe na, karon form React-e.
 
+    /**
+     * Store a newly created resource in storage.
+     */
     public function store(Request $request)
     {
-        Medicine::create($this->validated($request));
+        $validated = $this->validateMedicine($request);
 
-        return redirect()->route('medicines.index')->with('success', 'Medicine added successfully.');
+        $medicine = Medicine::create($validated);
+
+        return response()->json([
+            'success'  => 'Medicine created successfully',
+            'medicine' => $medicine,
+        ]);
     }
 
-    public function show(Medicine $medicine)
+    /**
+     * Display the specified resource.
+     */
+    public function show(string $id)
     {
-        $purchases = $medicine->purchases()->with('supplier')->latest('purchase_date')->latest('id')->take(10)->get();
+        $medicine = Medicine::find($id);
 
-        return view('admin.pages.medicine.show', compact('medicine', 'purchases'));
+        if ($medicine) {
+            return response()->json([
+                'success'  => true,
+                'medicine' => $medicine,
+            ]);
+        } else {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Medicine not found',
+            ], 404);
+        }
     }
 
-    public function edit(Medicine $medicine)
+    /**
+     * Update the specified resource in storage.
+     */
+    public function update(Request $request, string $id)
     {
-        return view('admin.pages.medicine.edit', compact('medicine'));
-    }
+        $validated = $this->validateMedicine($request);
 
-    public function update(Request $request, Medicine $medicine)
-    {
-        $medicine->update($this->validated($request));
+        $medicine = Medicine::find($id);
 
-        return redirect()->route('medicines.index')->with('success', 'Medicine updated successfully.');
-    }
-
-    public function destroy(Medicine $medicine)
-    {
-        if ($medicine->purchases()->exists() || $medicine->prescriptionMedicines()->exists()) {
-            return redirect()->route('medicines.index')
-                ->with('error', 'This medicine is used in purchases or prescriptions and cannot be deleted.');
+        if (!$medicine) {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Medicine not found',
+            ], 404);
         }
 
-        $medicine->delete();
-
-        return redirect()->route('medicines.index')->with('success', 'Medicine deleted successfully.');
+        if ($medicine->update($validated)) {
+            return response()->json([
+                'success'  => true,
+                'message'  => 'Medicine updated successfully',
+                'medicine' => $medicine,
+            ]);
+        } else {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Medicine is not updated',
+            ], 500);
+        }
     }
 
-    private function validated(Request $request): array
+    /**
+     * Remove the specified resource from storage.
+     */
+    public function destroy(string $id)
+    {
+        $medicine = Medicine::find($id);
+
+        if (!$medicine) {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Medicine not found',
+            ], 404);
+        }
+
+        try {
+            $medicine->delete();
+        } catch (QueryException $e) {
+            // Kono prescription/purchase-e use hole foreign key delete hote dey na
+            return response()->json([
+                'error'   => true,
+                'message' => 'This medicine is already used in other records, so it cannot be deleted',
+            ], 409);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Medicine deleted successfully',
+        ]);
+    }
+
+    // Tomar Medicine table-e aro column thakle (manufacturer, expiry_date ...) shudhu eikhane add korlei hobe.
+    private function validateMedicine(Request $request): array
     {
         return $request->validate([
-            'name' => 'required|string|max:150',
-            'generic_name' => 'nullable|string|max:150',
-            'category' => 'nullable|string|max:100',
-            'unit_price' => 'nullable|numeric|min:0|max:99999999.99',
-            'stock_quantity' => 'required|integer|min:0',
+            'name'           => ['required', 'string', 'max:150'],
+            'generic_name'   => ['nullable', 'string', 'max:150'],
+            'category'       => ['nullable', 'string', 'max:100'],
+            'unit_price'     => ['required', 'numeric', 'min:0'],
+            'stock_quantity' => ['required', 'integer', 'min:0'],
         ]);
     }
 }

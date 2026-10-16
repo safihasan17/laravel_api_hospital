@@ -3,11 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Models\Doctor;
-use App\Models\LabTest;
 use App\Models\Invoice;
+use App\Models\LabTest;
 use App\Models\LabTestOrder;
 use App\Models\Patient;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 
 class LabTestOrderController extends Controller
@@ -17,34 +18,41 @@ class LabTestOrderController extends Controller
      */
     public function index()
     {
-        $labTestOrders = LabTestOrder::with(['patient', 'doctor.user', 'test'])
+        $labTestOrders = LabTestOrder::with(['patient:id,name', 'doctor.user:id,name', 'test:id,test_name,price'])
             ->latest('order_date')
-            ->paginate(10);
+            ->latest('id')
+            ->get();
 
-        $pendingCount = LabTestOrder::where('status', 'Pending')->count();
+        $pendingCount    = LabTestOrder::where('status', 'Pending')->count();
         $inProgressCount = LabTestOrder::where('status', 'In Progress')->count();
-        $completedCount = LabTestOrder::where('status', 'Completed')->count();
-        $cancelledCount = LabTestOrder::where('status', 'Cancelled')->count();
+        $completedCount  = LabTestOrder::where('status', 'Completed')->count();
+        $cancelledCount  = LabTestOrder::where('status', 'Cancelled')->count();
 
-        return view('admin.pages.lab-test-order.index', compact(
-            'labTestOrders',
-            'pendingCount',
-            'inProgressCount',
-            'completedCount',
-            'cancelledCount'
-        ));
+        return response()->json([
+            'success'         => true,
+            'labTestOrders'   => $labTestOrders,
+            'pendingCount'    => $pendingCount,
+            'inProgressCount' => $inProgressCount,
+            'completedCount'  => $completedCount,
+            'cancelledCount'  => $cancelledCount,
+        ]);
     }
 
-    /**
-     * Show the form for creating a new resource.
-     */
-    public function create()
-    {
-        $patients = Patient::orderBy('name')->get();
-        $doctors = Doctor::with('user')->get();
-        $labTests = LabTest::orderBy('test_name')->get();
+    // create() ar edit() lagbe na, karon form React-e.
+    // Dropdown-er data options() theke ashbe: api.get("lab-test-orders/options")
 
-        return view('admin.pages.lab-test-order.create', compact('patients', 'doctors', 'labTests'));
+    /**
+     * Form-er dropdown-er data (patients, doctors, lab tests).
+     * Route-e apiResource-er ager e boshate hobe, noile "options" ke {id} bhabe.
+     */
+    public function options()
+    {
+        return response()->json([
+            'success'  => true,
+            'patients' => Patient::orderBy('name')->get(['id', 'name', 'phone']),
+            'doctors'  => Doctor::with(['user:id,name', 'department:id,name'])->get(),
+            'labTests' => LabTest::orderBy('test_name')->get(['id', 'test_name', 'price']),
+        ]);
     }
 
     /**
@@ -53,18 +61,20 @@ class LabTestOrderController extends Controller
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'patient_id' => 'required|exists:patients,id',
-            'doctor_id'  => 'required|exists:doctors,id',
-            'status'     => 'required|in:Pending,In Progress,Completed,Cancelled',
-            'result'     => 'nullable|string',
-            'order_date' => 'required|date',
-            'lab_tests'  => 'required|array|min:1',
+            'patient_id'          => 'required|exists:patients,id',
+            'doctor_id'           => 'required|exists:doctors,id',
+            'status'              => 'required|in:Pending,In Progress,Completed,Cancelled',
+            'result'              => 'nullable|string',
+            'order_date'          => 'required|date',
+            'lab_tests'           => 'required|array|min:1',
             'lab_tests.*.test_id' => 'required|distinct|exists:lab_tests,id',
         ]);
 
-        DB::transaction(function () use ($validated) {
+        $orders = DB::transaction(function () use ($validated) {
+            $created = [];
+
             foreach ($validated['lab_tests'] as $row) {
-                LabTestOrder::create([
+                $created[] = LabTestOrder::create([
                     'patient_id' => $validated['patient_id'],
                     'doctor_id'  => $validated['doctor_id'],
                     'test_id'    => $row['test_id'],
@@ -73,83 +83,140 @@ class LabTestOrderController extends Controller
                     'order_date' => $validated['order_date'],
                 ]);
             }
+
+            return collect($created);
         });
 
-        return redirect()
-            ->route('lab-test-orders.index')
-            ->with('success', 'Lab test order created successfully.');
+        $orders->each->load(['patient:id,name', 'doctor.user:id,name', 'test:id,test_name,price']);
+
+        return response()->json([
+            'success' => 'Lab test order created successfully',
+            'orders'  => $orders,
+        ]);
     }
 
     /**
      * Display the specified resource.
      */
-    public function show(LabTestOrder $labTestOrder)
+    public function show(string $id)
     {
-        $labTestOrder->load(['patient', 'doctor.user', 'doctor.department', 'test']);
+        $labTestOrder = LabTestOrder::with([
+            'patient',
+            'doctor.user:id,name,email,phone',
+            'doctor.department:id,name',
+            'test',
+        ])->find($id);
 
-        return view('admin.pages.lab-test-order.show', compact('labTestOrder'));
-    }
-
-    /**
-     * Show the form for editing the specified resource.
-     */
-    public function edit(LabTestOrder $labTestOrder)
-    {
-        $patients = Patient::orderBy('name')->get();
-        $doctors = Doctor::with('user')->get();
-        $labTests = LabTest::orderBy('test_name')->get();
-
-        return view('admin.pages.lab-test-order.edit', compact('labTestOrder', 'patients', 'doctors', 'labTests'));
+        if ($labTestOrder) {
+            return response()->json([
+                'success'       => true,
+                'labTestOrder'  => $labTestOrder,
+            ]);
+        } else {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Lab test order not found',
+            ], 404);
+        }
     }
 
     /**
      * Update the specified resource in storage.
      */
-    public function update(Request $request, LabTestOrder $labTestOrder)
+    public function update(Request $request, string $id)
     {
         $validated = $request->validate([
             'patient_id' => 'required|exists:patients,id',
-            'doctor_id' => 'required|exists:doctors,id',
-            'test_id' => 'required|exists:lab_tests,id',
-            'status' => 'required|in:Pending,In Progress,Completed,Cancelled',
-            'result' => 'nullable|string',
+            'doctor_id'  => 'required|exists:doctors,id',
+            'test_id'    => 'required|exists:lab_tests,id',
+            'status'     => 'required|in:Pending,In Progress,Completed,Cancelled',
+            'result'     => 'nullable|string',
             'order_date' => 'required|date',
         ]);
 
-        $labTestOrder->update($validated);
+        $labTestOrder = LabTestOrder::find($id);
 
-        return redirect()
-            ->route('lab-test-orders.index')
-            ->with('success', 'Lab test order updated successfully.');
+        if (!$labTestOrder) {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Lab test order not found',
+            ], 404);
+        }
+
+        if ($labTestOrder->update($validated)) {
+            $labTestOrder->load(['patient:id,name', 'doctor.user:id,name', 'test:id,test_name,price']);
+
+            return response()->json([
+                'success'      => true,
+                'message'      => 'Lab test order updated successfully',
+                'labTestOrder' => $labTestOrder,
+            ]);
+        } else {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Lab test order is not updated',
+            ], 500);
+        }
     }
 
     /**
      * Remove the specified resource from storage.
      */
-    public function destroy(LabTestOrder $labTestOrder)
+    public function destroy(string $id)
     {
-        $labTestOrder->delete();
+        $labTestOrder = LabTestOrder::find($id);
 
-        return redirect()
-            ->route('lab-test-orders.index')
-            ->with('success', 'Lab test order deleted successfully.');
+        if ($labTestOrder) {
+            $labTestOrder->delete();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Lab test order deleted successfully',
+            ]);
+        } else {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Lab test order not found',
+            ], 404);
+        }
     }
 
-
-    public function generateInvoice(LabTestOrder $labTestOrder)
+    /**
+     * Lab order theke invoice generate kore.
+     * POST /lab-test-orders/{id}/generate-invoice
+     */
+    public function generateInvoice(string $id)
     {
+        $labTestOrder = LabTestOrder::find($id);
+
+        if (!$labTestOrder) {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Lab test order not found',
+            ], 404);
+        }
+
         if ($labTestOrder->prescription_id) {
-            return back()->with('error', 'This test belongs to a prescription. Generate the invoice from the prescription.');
+            return response()->json([
+                'error'   => true,
+                'message' => 'This test belongs to a prescription. Generate the invoice from the prescription.',
+            ], 422);
         }
 
         if ($labTestOrder->status === 'Cancelled') {
-            return back()->with('error', 'A cancelled test cannot be billed.');
+            return response()->json([
+                'error'   => true,
+                'message' => 'A cancelled test cannot be billed.',
+            ], 422);
         }
+
+        // order_date model-e date cast thakuk ba na thakuk, duto-tei kaj kore
+        $orderDate = Carbon::parse($labTestOrder->order_date)->toDateString();
 
         // Ei patient-er ei tarikher shob test (cancelled/prescription-er bade) ekshathe
         $orders = LabTestOrder::with('test')
             ->where('patient_id', $labTestOrder->patient_id)
-            ->whereDate('order_date', $labTestOrder->order_date->toDateString())
+            ->whereDate('order_date', $orderDate)
             ->whereNull('prescription_id')
             ->where('status', '!=', 'Cancelled')
             ->get();
@@ -161,11 +228,11 @@ class LabTestOrderController extends Controller
             ->where('status', 'Unpaid')
             ->first();
 
-        if (! $invoice) {
+        if (!$invoice) {
             $invoice = Invoice::create([
-                'patient_id' => $labTestOrder->patient_id,
+                'patient_id'   => $labTestOrder->patient_id,
                 'invoice_date' => today(),
-                'status' => 'Unpaid',
+                'status'       => 'Unpaid',
                 'total_amount' => 0,
             ]);
         }
@@ -176,20 +243,22 @@ class LabTestOrderController extends Controller
                 ->where('item_reference_id', $order->test_id)
                 ->exists();
 
-            if (! $alreadyBilled) {
+            if (!$alreadyBilled) {
                 $invoice->items()->create([
-                    'item_type' => 'Lab Test',
+                    'item_type'         => 'Lab Test',
                     'item_reference_id' => $order->test_id,
-                    'description' => $order->test->test_name ?? 'Lab Test',
-                    'amount' => $order->test->price ?? 0,
+                    'description'       => $order->test->test_name ?? 'Lab Test',
+                    'amount'            => $order->test->price ?? 0,
                 ]);
             }
         }
 
         $invoice->update(['total_amount' => $invoice->items()->sum('amount')]);
 
-        return redirect()
-            ->route('invoices.show', $invoice->id)
-            ->with('success', 'Test invoice is ready to print.');
+        return response()->json([
+            'success'    => true,
+            'message'    => 'Test invoice is ready to print',
+            'invoice_id' => $invoice->id,
+        ]);
     }
 }
