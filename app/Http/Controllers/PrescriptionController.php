@@ -30,9 +30,9 @@ class PrescriptionController extends Controller
             ->whereYear('prescription_date', now()->year)
             ->count();
 
-        $prescriptions = Prescription::with(['patient:id,name', 'doctor.user:id,name'])
+        $prescriptions = Prescription::with(['patient:id,name', 'doctor.user:id,name', 'admission:id,status'])
             ->withCount(['prescriptionMedicines', 'labTestOrders'])
-            ->orderBy('id', 'desc')
+            ->latest('prescription_date')
             ->get();
 
         return response()->json([

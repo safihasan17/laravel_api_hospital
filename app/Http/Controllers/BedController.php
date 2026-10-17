@@ -4,102 +4,147 @@ namespace App\Http\Controllers;
 
 use App\Models\Bed;
 use App\Models\Ward;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 
 class BedController extends Controller
 {
     /**
      * Display a listing of the resource.
+     *
+     * Filter: ?ward_id=  , ?status=
      */
-    public function index()
+    public function index(Request $request)
     {
-        $beds = Bed::with('ward')->orderBy('ward_id')->orderBy('bed_number')->paginate(15);
+        $beds = Bed::with('ward')
+            ->when($request->filled('ward_id'), fn ($q) => $q->where('ward_id', $request->ward_id))
+            ->when($request->filled('status'), fn ($q) => $q->where('status', $request->status))
+            ->orderBy('ward_id')
+            ->orderBy('bed_number')
+            ->get();
 
-        $totalBeds = Bed::count();
-        $availableCount = Bed::where('status', 'Available')->count();
-        $occupiedCount = Bed::where('status', 'Occupied')->count();
+        $totalBeds        = Bed::count();
+        $availableCount   = Bed::where('status', 'Available')->count();
+        $occupiedCount    = Bed::where('status', 'Occupied')->count();
         $maintenanceCount = Bed::where('status', 'Maintenance')->count();
 
-        return view('admin.pages.bed.index', compact(
-            'beds', 'totalBeds', 'availableCount', 'occupiedCount', 'maintenanceCount'
-        ));
+        return response()->json([
+            'success'          => true,
+            'beds'             => $beds,
+            'totalBeds'        => $totalBeds,
+            'availableCount'   => $availableCount,
+            'occupiedCount'    => $occupiedCount,
+            'maintenanceCount' => $maintenanceCount,
+        ]);
     }
 
-    /**
-     * Show the form for creating a new resource.
-     */
-    public function create()
-    {
-        $wards = Ward::orderBy('name')->get();
-
-        return view('admin.pages.bed.create', compact('wards'));
-    }
+    // create() ar edit() lagbe na, karon form React-e.
+    // Ward dropdown-er jonno GET wards use hobe (WardController@index-er `wards`).
 
     /**
      * Store a newly created resource in storage.
      */
     public function store(Request $request)
     {
-        $validated = $request->validate([
-            'ward_id' => 'required|exists:wards,id',
-            'bed_number' => 'required|string|max:20',
-            'status' => 'required|in:Available,Occupied,Reserved,Maintenance',
+        $validated = $this->validateBed($request);
+
+        $bed = Bed::create($validated);
+        $bed->load('ward');
+
+        return response()->json([
+            'success' => 'Bed added successfully',
+            'bed'     => $bed,
         ]);
-
-        Bed::create($validated);
-
-        return redirect()
-            ->route('beds.index')
-            ->with('success', 'Bed added successfully.');
     }
 
     /**
      * Display the specified resource.
      */
-    public function show(Bed $bed)
+    public function show(string $id)
     {
-        $bed->load('ward');
+        $bed = Bed::with('ward')->find($id);
 
-        return view('admin.pages.bed.show', compact('bed'));
-    }
-
-    /**
-     * Show the form for editing the specified resource.
-     */
-    public function edit(Bed $bed)
-    {
-        $wards = Ward::orderBy('name')->get();
-
-        return view('admin.pages.bed.edit', compact('bed', 'wards'));
+        if ($bed) {
+            return response()->json([
+                'success' => true,
+                'bed'     => $bed,
+            ]);
+        } else {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Bed not found',
+            ], 404);
+        }
     }
 
     /**
      * Update the specified resource in storage.
      */
-    public function update(Request $request, Bed $bed)
+    public function update(Request $request, string $id)
     {
-        $validated = $request->validate([
-            'ward_id' => 'required|exists:wards,id',
-            'bed_number' => 'required|string|max:20',
-            'status' => 'required|in:Available,Occupied,Reserved,Maintenance',
-        ]);
+        $validated = $this->validateBed($request);
 
-        $bed->update($validated);
+        $bed = Bed::find($id);
 
-        return redirect()
-            ->route('beds.index')
-            ->with('success', 'Bed updated successfully.');
+        if (!$bed) {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Bed not found',
+            ], 404);
+        }
+
+        if ($bed->update($validated)) {
+            $bed->load('ward');
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Bed updated successfully',
+                'bed'     => $bed,
+            ]);
+        } else {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Bed is not updated',
+            ], 500);
+        }
     }
 
     /**
      * Remove the specified resource from storage.
      */
-    public function destroy(Bed $bed)
+    public function destroy(string $id)
     {
-        $bed->delete();
+        $bed = Bed::find($id);
 
-        return redirect()
-            ->route('beds.index')
-            ->with('success', 'Bed deleted successfully.');
+        if (!$bed) {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Bed not found',
+            ], 404);
+        }
+
+        try {
+            $bed->delete();
+        } catch (QueryException $e) {
+            // Kono admission-e use hole foreign key delete hote dey na
+            return response()->json([
+                'error'   => true,
+                'message' => 'This bed is already used in admissions, so it cannot be deleted',
+            ], 409);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Bed deleted successfully',
+        ]);
+    }
+
+    private function validateBed(Request $request): array
+    {
+        return $request->validate([
+            'ward_id'    => 'required|exists:wards,id',
+            'bed_number' => 'required|string|max:20',
+            'status'     => 'required|in:Available,Occupied,Reserved,Maintenance',
+        ]);
     }
 }

@@ -3,7 +3,9 @@
 namespace App\Http\Controllers;
 
 use App\Models\Ward;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class WardController extends Controller
 {
@@ -18,18 +20,31 @@ class WardController extends Controller
 
         $totalTypes = Ward::whereNotNull('type')->distinct()->count('type');
 
-        $wards = Ward::orderby('id', 'desc')->get();
-        return view('admin.pages.ward.index', compact('wards', 'totalWards', 'totalFloors', 'totalTypes'));
+        $wards = Ward::orderBy('id', 'desc')->get();
+
+        return response()->json([
+            'success'     => true,
+            'wards'       => $wards,
+            'totalWards'  => $totalWards,
+            'totalFloors' => $totalFloors,
+            'totalTypes'  => $totalTypes,
+        ]);
     }
 
+    // create() ar edit() lagbe na, karon form React-e.
+    // Dropdown-er data options() theke ashbe: api.get("wards/options")
+
     /**
-     * Show the form for creating a new resource.
+     * Floor ar type-er dropdown option.
+     * Route-e apiResource-er ager e boshate hobe, noile "options" ke {id} bhabe.
      */
-    public function create()
+    public function options()
     {
-        $floors = $this->floorOptions();
-        $types = $this->typeOptions();
-        return view('admin.pages.ward.create', compact('floors', 'types'));
+        return response()->json([
+            'success' => true,
+            'floors'  => $this->floorOptions(),
+            'types'   => $this->typeOptions(),
+        ]);
     }
 
     /**
@@ -37,11 +52,10 @@ class WardController extends Controller
      */
     public function store(Request $request)
     {
-        // dd($request->all());
         $request->validate([
-            'name' => 'required|min:3|max:100|unique:wards,name',
+            'name'  => 'required|min:3|max:100|unique:wards,name',
             'floor' => 'required|max:20',
-            'type' => 'required|max:50'
+            'type'  => 'required|max:50',
         ]);
 
         $ward        = new Ward();
@@ -50,13 +64,15 @@ class WardController extends Controller
         $ward->type  = $request->type;
 
         if ($ward->save()) {
-            return redirect()
-                ->route('wards.index')
-                ->with('success', 'ward created successfully');
+            return response()->json([
+                'success' => 'Ward created successfully',
+                'ward'    => $ward,
+            ]);
         } else {
-            return redirect()
-                ->route('wards.create')
-                ->with('error', 'ward not created');
+            return response()->json([
+                'error'   => true,
+                'message' => 'Ward is not created',
+            ], 500);
         }
     }
 
@@ -65,21 +81,19 @@ class WardController extends Controller
      */
     public function show(string $id)
     {
-        $ward = Ward::findOrFail($id);
+        $ward = Ward::find($id);
 
-        return view('admin.pages.ward.show', compact('ward'));
-    }
-
-    /**
-     * Show the form for editing the specified resource.
-     */
-    public function edit(string $id)
-    {
-        $ward = Ward::findOrFail($id);
-        $floors = $this->floorOptions();
-        $types = $this->typeOptions();
-        // dd($ward);
-        return view('admin.pages.ward.edit', compact('ward', 'floors', 'types'));
+        if ($ward) {
+            return response()->json([
+                'success' => true,
+                'ward'    => $ward,
+            ]);
+        } else {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Ward not found',
+            ], 404);
+        }
     }
 
     /**
@@ -87,26 +101,36 @@ class WardController extends Controller
      */
     public function update(Request $request, string $id)
     {
-        // dd($request->all());
         $request->validate([
-            'name' => "required|min:3|max:100|unique:wards,name,$id",
+            'name'  => ['required', 'min:3', 'max:100', Rule::unique('wards', 'name')->ignore($id)],
             'floor' => 'required|max:20',
-            'type' => 'required|max:50'
+            'type'  => 'required|max:50',
         ]);
 
-        $ward        = Ward::findOrFail($id);
+        $ward = Ward::find($id);
+
+        if (!$ward) {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Ward not found',
+            ], 404);
+        }
+
         $ward->name  = $request->name;
         $ward->floor = $request->floor;
         $ward->type  = $request->type;
 
         if ($ward->save()) {
-            return redirect()
-                ->route('wards.index')
-                ->with('success', 'ward updated successfully');
+            return response()->json([
+                'success' => true,
+                'message' => 'Ward updated successfully',
+                'ward'    => $ward,
+            ]);
         } else {
-            return redirect()
-                ->route('wards.edit', ['ward' => $id])
-                ->with('error', 'ward not updated');
+            return response()->json([
+                'error'   => true,
+                'message' => 'Ward is not updated',
+            ], 500);
         }
     }
 
@@ -115,12 +139,29 @@ class WardController extends Controller
      */
     public function destroy(string $id)
     {
-        // dd($id);
-        Ward::destroy($id);
+        $ward = Ward::find($id);
 
-        return redirect()
-            ->route('wards.index')
-            ->with('success', 'ward deleted successfully');
+        if (!$ward) {
+            return response()->json([
+                'error'   => true,
+                'message' => 'Ward not found',
+            ], 404);
+        }
+
+        try {
+            $ward->delete();
+        } catch (QueryException $e) {
+            // Ward-e bed ba admission thakle foreign key delete hote dey na
+            return response()->json([
+                'error'   => true,
+                'message' => 'This ward is already used by beds or admissions, so it cannot be deleted',
+            ], 409);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Ward deleted successfully',
+        ]);
     }
 
     /**
